@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">实时翻译</string>
+    <string name="settings">设置</string>
+    <string name="start_translate">开始翻译</string>
+    <string name="stop_translate">停止翻译</string>
+    <string name="status_idle">未连接</string>
+    <string name="status_connecting">连接中…</string>
+    <string name="status_active">正在翻译，请说话</string>
+    <string name="status_finishing">等待剩余翻译结果…</string>
+    <string name="status_reconnecting">连接中断，正在重连（第 %1$d 次）…</string>
+    <string name="status_mic_paused">音频被其他应用占用，已暂停收音</string>
+    <string name="status_closed">已结束</string>
+    <string name="subtitle_empty">点击下方按钮开始实时翻译</string>
+    <string name="source_lang_label">自动检测</string>
+    <string name="api_key_label">百炼 API Key</string>
+    <string name="workspace_label">业务空间 ID（选填，留空走公共域名）</string>
+    <string name="region_label">地域</string>
+    <string name="region_beijing">华北2（北京）</string>
+    <string name="region_singapore">新加坡</string>
+    <string name="target_lang_label">目标语言</string>
+    <string name="save">保存</string>
+    <string name="cancel">取消</string>
+    <string name="mic_permission_needed">需要麦克风权限才能使用实时翻译</string>
+    <string name="settings_incomplete">请先在设置中填写百炼 API Key</string>
+    <string name="speaker_format">说话人 %1$s</string>
+    <string name="history">历史记录</string>
+    <string name="history_empty">还没有翻译记录</string>
+    <string name="notification_permission_hint">未授予通知权限，后台翻译时可能看不到状态</string>
+    <string name="session_active_history_hint">正在翻译中，历史记录将在会话结束后更新</string>
+    <string name="play_mic">播放原声</string>
+    <string name="play_translated">播放译音</string>
+    <string name="stop_playback">停止播放</string>
+    <string name="export_srt">导出字幕</string>
+    <string name="delete">删除</string>
+    <string name="delete_confirm">删除该会话及其录音文件？</string>
+    <string name="no_translated_audio">该会话没有译音文件</string>
+    <string name="no_mic_audio">该会话没有原声文件</string>
+    <string name="srt_exported_to">字幕已导出到录音目录</string>
+    <string name="session_segment_count">%1$d 句</string>
+    <string name="session_duration_format">%1$d 分钟</string>
+</resources>
