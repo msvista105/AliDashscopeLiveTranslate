@@ -1,5 +1,6 @@
 package com.sxm.livetranslate
 
+import android.os.SystemClock
 import android.util.Base64
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,8 @@ class LiveTranslateClient(
     private val onError: (String) -> Unit,
     private val onClosed: () -> Unit,
     private val onTransportFailure: (String) -> Unit = {},
+    /** 重连时译文 WAV 已写入的字节数，用于让音频时间轴接续而不是从 0 重算。 */
+    private val translatedBytesAlreadyWritten: Long = 0L,
 ) {
     enum class State { IDLE, CONNECTING, ACTIVE, FINISHING, CLOSED }
 
@@ -33,12 +36,23 @@ class LiveTranslateClient(
         var speakerId: String? = null
         var sourceText: String = ""
         var translationText: String = ""
+
+        /** elapsedRealtime 时刻；0 表示服务端没给该事件。用于换算会话内时间轴。 */
+        var startedMono: Long = 0L
+        var endedMono: Long = 0L
+
+        /** 译文音频在 24kHz 轨内的起止时间；-1 表示尚无音频。 */
+        var audioStartMs: Long = -1L
+        var audioEndMs: Long = -1L
     }
 
     companion object {
         const val MODEL = "qwen3.8-livetranslate-flash-realtime"
         const val DEFAULT_VOICE = "Tina"
         private const val CONNECT_TIMEOUT_MS = 20_000L
+
+        /** 24kHz 16bit 单声道 PCM：48 字节/毫秒。 */
+        private const val TRANSLATED_BYTES_PER_MS = 48L
 
         /** WorkspaceId 为空时回退到公共域名，让只有 API Key 的用户也能连。 */
         fun buildUrl(workspaceId: String, useSingapore: Boolean): String {
@@ -74,6 +88,11 @@ class LiveTranslateClient(
     private var failureMessage: String? = null
     private var closing = false
 
+    private var translatedBytes: Long = translatedBytesAlreadyWritten
+
+    /** 当前译文响应归属的语句；response.audio.delta 不带 item_id，只能按响应顺序关联。 */
+    private var currentResponse: Segment? = null
+
     suspend fun connect(
         apiKey: String,
         workspaceId: String,
@@ -86,6 +105,8 @@ class LiveTranslateClient(
         segments.clear()
         segmentBySourceId.clear()
         segmentByTranslationId.clear()
+        translatedBytes = translatedBytesAlreadyWritten
+        currentResponse = null
         sessionCreated = CompletableDeferred()
         sessionUpdated = CompletableDeferred()
         sessionFinished = CompletableDeferred()
@@ -249,15 +270,21 @@ class LiveTranslateClient(
             "input_audio_buffer.speech_started" -> {
                 val sourceId = event.optString("item_id")
                 if (sourceId.isNotEmpty()) {
-                    val segment = synchronized(lock) {
-                        segmentBySourceId.getOrPut(sourceId) {
+                    val now = SystemClock.elapsedRealtime()
+                    val speaker = event.optString("speaker_id").takeIf { it.isNotEmpty() }
+                    synchronized(lock) {
+                        val segment = segmentBySourceId.getOrPut(sourceId) {
                             Segment().also { segments.add(it) }
                         }
-                    }
-                    event.optString("speaker_id").takeIf { it.isNotEmpty() }?.let {
-                        synchronized(lock) { segment.speakerId = it }
+                        if (segment.startedMono == 0L) segment.startedMono = now
+                        if (speaker != null) segment.speakerId = speaker
                     }
                 }
+                notifyChanged()
+            }
+
+            "input_audio_buffer.speech_stopped" -> {
+                markEnded(event.optString("item_id"))
                 notifyChanged()
             }
 
@@ -266,7 +293,11 @@ class LiveTranslateClient(
             }
 
             "conversation.item.input_audio_transcription.completed" -> {
-                appendSource(event.optString("item_id"), event.optString("transcript"), replace = true)
+                val sourceId = event.optString("item_id")
+                appendSource(sourceId, event.optString("transcript"), replace = true)
+                // speech_stopped 缺失时用识别完成时刻近似语句结束
+                markEnded(sourceId)
+                notifyChanged()
             }
 
             "conversation.item.created" -> {
@@ -279,6 +310,7 @@ class LiveTranslateClient(
                     val source = segmentBySourceId[sourceId]
                     if (source != null) {
                         segmentByTranslationId[translationId] = source
+                        currentResponse = source
                     }
                 }
                 notifyChanged()
@@ -302,16 +334,41 @@ class LiveTranslateClient(
             "response.audio.delta" -> {
                 val b64 = event.optString("delta")
                 if (b64.isNotEmpty()) {
-                    onTranslationAudio(Base64.decode(b64, Base64.NO_WRAP))
+                    val pcm = Base64.decode(b64, Base64.NO_WRAP)
+                    val startBytes = translatedBytes
+                    translatedBytes += pcm.size
+                    synchronized(lock) {
+                        currentResponse?.let { segment ->
+                            if (segment.audioStartMs < 0) {
+                                segment.audioStartMs = startBytes / TRANSLATED_BYTES_PER_MS
+                            }
+                            segment.audioEndMs = translatedBytes / TRANSLATED_BYTES_PER_MS
+                        }
+                    }
+                    onTranslationAudio(pcm)
                 }
             }
 
             "response.done" -> {
+                synchronized(lock) {
+                    currentResponse?.let { it.audioEndMs = translatedBytes / TRANSLATED_BYTES_PER_MS }
+                    currentResponse = null
+                }
                 val response = event.optJSONObject("response")
                 if (response != null && response.optString("status") != "completed") {
                     onError("翻译响应异常: ${response.optString("status")}")
                 }
+                notifyChanged()
             }
+        }
+    }
+
+    private fun markEnded(sourceId: String) {
+        if (sourceId.isEmpty()) return
+        val now = SystemClock.elapsedRealtime()
+        synchronized(lock) {
+            val segment = segmentBySourceId[sourceId] ?: return
+            if (segment.endedMono == 0L) segment.endedMono = now
         }
     }
 

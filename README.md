@@ -13,8 +13,9 @@ Android 实时语音翻译 App。手机麦克风拾音，通过阿里云百炼�
 - **热词 / 术语表**：每行 `原文=译文`，随 `session.update` 下发给 `translation.corpus.phrases`，专有名词可固定译法
 - **双地域**：华北2（北京）与新加坡可切换
 - **会话历史**：SQLite 存会话与语句，列表可查、可删（连带删音频）
-- **回放与导出**：详情页播放译文音频，导出 SRT 经 FileProvider 分享
+- **回放与导出**：详情页播放原声/译音，播放时按句高亮，点任意字幕从该句位置开始播；导出 SRT 经 FileProvider 分享
 - **双轨录音**：`<时间戳>_mic.wav`（16kHz）与 `<时间戳>_translated.wav`（24kHz）写在 `getExternalFilesDir()/recordings/`
+- **时间轴**：服务端事件不带时间戳，客户端按 `speech_started` / `speech_stopped` 到达时刻记录语句起止，译音按已写入字节数换算 24kHz 轨内偏移，因此字幕与两条 WAV 都能对齐
 - **抗抖动**：断线指数退避重连（1s/2s/4s，最多 3 次），重连复用同一会话与同一对 WAV
 - **音频焦点**：失去焦点即真停采集，恢复后自动续采；`PARTIAL_WAKE_LOCK` 保证息屏不断流
 
@@ -72,7 +73,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 - **会话资源归 `TranslateManager`**。UI 只是 `StateFlow<UiState>` 的订阅者，Activity 旋转或关闭都不会掐断翻译；`SessionViewModel.stop()` 刻意不走 `viewModelScope`。
 - **线程边界**：麦克风采集线程只调 `sendAudio`（断线后静默丢帧，不抛异常）；WebSocket 回调切主线程更新状态；磁盘写走单线程 executor。
 
-数据表：`sessions(_id, start_time, end_time, source_lang, target_lang, mic_file, translated_file)` 与 `segments(_id, session_id, start_ms, speaker_id, source_text, translation_text)`，外键级联删除。
+数据表：`sessions(_id, start_time, end_time, source_lang, target_lang, mic_file, translated_file)` 与 `segments(_id, session_id, start_ms, end_ms, audio_start_ms, audio_end_ms, speaker_id, source_text, translation_text)`，外键级联删除。`start_ms/end_ms` 是原声轨时间，`audio_*` 是译音轨偏移，均由客户端实测而非估算。DB v1 → v2 用 `ALTER TABLE` 原地迁移，不丢历史数据。
 
 ## 协议要点
 
@@ -85,7 +86,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 ## 已知限制
 
-- **字幕时间轴是估算的**。SRT 的结束时间由 `estimateDurationMs` 按文本长度推算，不是真实音频长度，拿去配视频会有累积偏差
+- **时间轴精度受网络影响**。语句起止只能取事件到达时刻，和真实说话时刻有百毫秒级偏差；重叠说话时译音归属按响应顺序近似。v1 老会话没有 `end_ms`，回退到按文本长度估算
 - **音色不可选**。只有 `Tina` 经过实测，UI 不提供音色切换，避免塞进未验证的 ID
 - **断线重连与音频焦点未经现场验证**。代码已实现且构建通过，但真机测试里没有实际触发过这两条路径
 - 模拟器麦克风是虚拟静音，只能验 UI / Service / 存储 / 协议握手，语音效果必须真机
@@ -94,7 +95,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
 - **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
-- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成（字段按官方文档，未经真机联网验证）；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）、字幕与音频时间轴对齐回放
+- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成（字段按官方文档，未经真机联网验证）；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长）；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
 - **P3 发布准备** —— Release 签名 + ProGuard、API Key 迁移 EncryptedSharedPreferences、MockWebServer 协议单测
 
 ## 安全

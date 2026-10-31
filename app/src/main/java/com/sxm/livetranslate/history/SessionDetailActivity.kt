@@ -1,13 +1,17 @@
 package com.sxm.livetranslate.history
 
 import android.content.Intent
+import android.graphics.Color
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.sxm.livetranslate.R
@@ -23,12 +27,31 @@ class SessionDetailActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_SESSION_ID = "session_id"
+        private const val HIGHLIGHT_TICK_MS = 200L
     }
+
+    private enum class Track { MIC, TRANSLATED }
+
+    private class Row(
+        val binding: RowSubtitleBinding,
+        val seg: SessionStore.SegmentRow,
+        val micEndMs: Long,
+    )
 
     private lateinit var binding: ActivitySessionDetailBinding
     private lateinit var store: SessionStore
     private var sessionId: Long = -1
     private var player: MediaPlayer? = null
+    private var playingTrack: Track? = null
+    private var micFile: String? = null
+    private var translatedFile: String? = null
+    private val rows = ArrayList<Row>()
+    private var activeRow: Row? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val highlightColor by lazy {
+        MaterialColors.getColor(binding.root, com.google.android.material.R.attr.colorSecondaryContainer)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,58 +74,187 @@ class SessionDetailActivity : AppCompatActivity() {
         setupPlayback(session.micFile, session.translatedFile)
         binding.btnDelete.setOnClickListener { confirmDelete() }
         binding.btnExportSrt.setOnClickListener { exportSrt() }
+        updatePlayButtons()
     }
 
     private fun renderSegments() {
         val segments = store.listSegments(sessionId)
-        for (seg in segments) {
-            val row = RowSubtitleBinding.inflate(
+        rows.clear()
+        binding.segmentList.removeAllViews()
+        for ((index, seg) in segments.withIndex()) {
+            val rowBinding = RowSubtitleBinding.inflate(
                 LayoutInflater.from(this), binding.segmentList, false
             )
-            row.tvSource.text = seg.sourceText
-            row.tvTranslation.text = seg.translationText
+            rowBinding.tvSource.text = seg.sourceText
+            rowBinding.tvTranslation.text = seg.translationText
             seg.speakerId?.let {
-                row.tvSpeaker.text = getString(R.string.speaker_format, it)
-                row.tvSpeaker.visibility = View.VISIBLE
+                rowBinding.tvSpeaker.text = getString(R.string.speaker_format, it)
+                rowBinding.tvSpeaker.visibility = View.VISIBLE
             }
-            binding.segmentList.addView(row.root)
+            val end = seg.endMs
+            rowBinding.tvTime.text = if (end != null && end > seg.startMs) {
+                "${formatClock(seg.startMs)} – ${formatClock(end)}"
+            } else {
+                formatClock(seg.startMs)
+            }
+
+            val nextStart = segments.getOrNull(index + 1)?.startMs
+            val row = Row(
+                rowBinding,
+                seg,
+                seg.endMs ?: nextStart?.minus(1) ?: (seg.startMs + 3000),
+            )
+            rowBinding.root.setOnClickListener { playRow(row) }
+            rows.add(row)
+            binding.segmentList.addView(rowBinding.root)
         }
     }
 
-    private fun setupPlayback(micFile: String?, translatedFile: String?) {
-        binding.btnPlayMic.visibility =
-            if (micFile != null && File(micFile).exists()) View.VISIBLE else View.GONE
-        binding.btnPlayTranslated.visibility =
-            if (translatedFile != null && File(translatedFile).exists()) View.VISIBLE else View.GONE
+    private fun setupPlayback(micPath: String?, translatedPath: String?) {
+        micFile = micPath
+        translatedFile = translatedPath
+        val micExists = micPath != null && File(micPath).exists()
+        val translatedExists = translatedPath != null && File(translatedPath).exists()
+        binding.btnPlayMic.visibility = if (micExists) View.VISIBLE else View.GONE
+        binding.btnPlayTranslated.visibility = if (translatedExists) View.VISIBLE else View.GONE
 
-        binding.btnPlayMic.setOnClickListener { playOrStop(micFile, R.string.no_mic_audio) }
+        binding.btnPlayMic.setOnClickListener {
+            if (playingTrack == Track.MIC) stopPlayback()
+            else startTrack(Track.MIC, micPath, 0L, R.string.no_mic_audio)
+        }
         binding.btnPlayTranslated.setOnClickListener {
-            playOrStop(translatedFile, R.string.no_translated_audio)
+            if (playingTrack == Track.TRANSLATED) stopPlayback()
+            else startTrack(Track.TRANSLATED, translatedPath, 0L, R.string.no_translated_audio)
         }
     }
 
-    private fun playOrStop(path: String?, missingHint: Int) {
-        player?.let {
-            it.release()
-            player = null
-            binding.btnPlayTranslated.setText(R.string.play_translated)
+    /** 点某条字幕：优先从译文音频的对应位置开始播，译文缺失时退回原声。 */
+    private fun playRow(row: Row) {
+        val transStart = row.seg.audioStartMs
+        if (transStart != null && translatedFile?.let { File(it).exists() } == true) {
+            startTrack(Track.TRANSLATED, translatedFile, transStart, R.string.no_translated_audio)
             return
         }
+        if (micFile?.let { File(it).exists() } == true) {
+            startTrack(Track.MIC, micFile, row.seg.startMs, R.string.no_mic_audio)
+            return
+        }
+        toast(getString(R.string.no_translated_audio))
+    }
+
+    private fun startTrack(track: Track, path: String?, offsetMs: Long, missingHint: Int) {
         if (path == null || !File(path).exists()) {
             toast(getString(missingHint))
             return
         }
-        player = MediaPlayer().apply {
-            setDataSource(path)
-            setOnCompletionListener {
-                it.release()
-                player = null
-                binding.btnPlayTranslated.setText(R.string.play_translated)
+        stopPlayback()
+        val mp = MediaPlayer()
+        try {
+            mp.setDataSource(path)
+            mp.setOnPreparedListener { prepared ->
+                if (offsetMs > 0) prepared.seekTo(offsetMs, MediaPlayer.SEEK_CLOSEST)
+                prepared.start()
             }
-            prepare()
-            start()
+            mp.setOnCompletionListener { stopPlayback() }
+            mp.setOnErrorListener { _, _, _ ->
+                stopPlayback()
+                true
+            }
+            mp.prepareAsync()
+        } catch (_: Exception) {
+            mp.release()
+            toast(getString(missingHint))
+            return
         }
-        binding.btnPlayTranslated.setText(R.string.stop_playback)
+        player = mp
+        playingTrack = track
+        updatePlayButtons()
+        handler.post(highlightTick)
+    }
+
+    private fun stopPlayback() {
+        handler.removeCallbacks(highlightTick)
+        player?.let {
+            try {
+                it.release()
+            } catch (_: Exception) {
+            }
+        }
+        player = null
+        playingTrack = null
+        setActiveRow(null)
+        updatePlayButtons()
+    }
+
+    private fun updatePlayButtons() {
+        binding.btnPlayMic.setText(
+            if (playingTrack == Track.MIC) R.string.stop_playback else R.string.play_mic
+        )
+        binding.btnPlayTranslated.setText(
+            if (playingTrack == Track.TRANSLATED) R.string.stop_playback else R.string.play_translated
+        )
+    }
+
+    private val highlightTick = object : Runnable {
+        override fun run() {
+            val mp = player ?: return
+            val track = playingTrack ?: return
+            val position = try {
+                mp.currentPosition.toLong()
+            } catch (_: Exception) {
+                0L
+            }
+            setActiveRow(findRowAt(track, position))
+            handler.postDelayed(this, HIGHLIGHT_TICK_MS)
+        }
+    }
+
+    private fun findRowAt(track: Track, positionMs: Long): Row? {
+        var lastBefore: Row? = null
+        for (row in rows) {
+            val start = if (track == Track.TRANSLATED) {
+                row.seg.audioStartMs ?: continue
+            } else {
+                row.seg.startMs
+            }
+            val end = if (track == Track.TRANSLATED) {
+                row.seg.audioEndMs ?: continue
+            } else {
+                row.micEndMs
+            }
+            if (positionMs in start..end) return row
+            if (positionMs > end) lastBefore = row
+        }
+        return lastBefore
+    }
+
+    private fun setActiveRow(row: Row?) {
+        if (row === activeRow) return
+        activeRow?.binding?.root?.setBackgroundColor(Color.TRANSPARENT)
+        activeRow = row
+        if (row != null) {
+            row.binding.root.setBackgroundColor(highlightColor)
+            ensureVisible(row.binding.root)
+        }
+    }
+
+    private fun ensureVisible(view: View) {
+        val top = view.top - binding.scroll.scrollY
+        if (top < 0 || top + view.height > binding.scroll.height) {
+            binding.scroll.smoothScrollTo(0, maxOf(0, view.top - 24))
+        }
+    }
+
+    private fun formatClock(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val h = totalSeconds / 3600
+        val m = totalSeconds / 60 % 60
+        val s = totalSeconds % 60
+        return if (h > 0) {
+            "%d:%02d:%02d".format(h, m, s)
+        } else {
+            "%02d:%02d".format(m, s)
+        }
     }
 
     private fun exportSrt() {
@@ -144,11 +296,6 @@ class SessionDetailActivity : AppCompatActivity() {
             }
             .setNegativeButton(R.string.cancel, null)
             .show()
-    }
-
-    private fun stopPlayback() {
-        player?.release()
-        player = null
     }
 
     private fun toast(message: String) {

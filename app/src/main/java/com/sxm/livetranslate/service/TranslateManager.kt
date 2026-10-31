@@ -6,6 +6,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.PowerManager
+import android.os.SystemClock
 import com.sxm.livetranslate.AppSettings
 import com.sxm.livetranslate.LiveTranslateClient
 import com.sxm.livetranslate.MicRecorder
@@ -86,6 +87,8 @@ class TranslateManager private constructor(context: Context) {
     private var wakeLock: PowerManager.WakeLock? = null
     private var focusRequest: AudioFocusRequest? = null
     private var sessionStartMs: Long = 0L
+    private var sessionStartMono: Long = 0L
+    private var translatedBytesWritten: Long = 0L
     private var reconnectAttempts = 0
 
     /** CAS 守卫：初连异常与 Socket 失败回调可能并发触发，只允许一个重连流程。 */
@@ -143,8 +146,11 @@ class TranslateManager private constructor(context: Context) {
         requestAudioFocus()
         val startTime = System.currentTimeMillis()
         sessionStartMs = startTime
+        sessionStartMono = SystemClock.elapsedRealtime()
+        translatedBytesWritten = 0L
         segmentRowIds.clear()
         committedTexts.clear()
+        committedTiming.clear()
         frozenSegments.clear()
         reconnectAttempts = 0
         reconnecting.set(false)
@@ -178,12 +184,14 @@ class TranslateManager private constructor(context: Context) {
         val c = LiveTranslateClient(
             onSegmentsChanged = { persistAndPublish() },
             onTranslationAudio = { pcm ->
+                translatedBytesWritten += pcm.size
                 translatedWriter?.append(pcm)
                 player?.write(pcm)
             },
             onError = { msg -> scope.launch { handleError(msg) } },
             onClosed = { },
             onTransportFailure = { msg -> scope.launch { handleTransportFailure(msg, fatalOnFailure) } },
+            translatedBytesAlreadyWritten = translatedBytesWritten,
         )
         client = c
         try {
@@ -271,6 +279,7 @@ class TranslateManager private constructor(context: Context) {
         translatedWriter = null
         segmentRowIds.clear()
         committedTexts.clear()
+        committedTiming.clear()
         frozenSegments.clear()
         abandonAudioFocus()
         releaseWakeLock()
@@ -289,9 +298,12 @@ class TranslateManager private constructor(context: Context) {
             val rowId = segmentRowIds[seg]
             if (rowId == null) {
                 val sid = currentSessionId ?: return
-                val id = store.insertSegment(
-                    sid, System.currentTimeMillis() - sessionStartMs, seg.speakerId
-                )
+                val startRel = if (seg.startedMono > 0) {
+                    (seg.startedMono - sessionStartMono).coerceAtLeast(0)
+                } else {
+                    (SystemClock.elapsedRealtime() - sessionStartMono).coerceAtLeast(0)
+                }
+                val id = store.insertSegment(sid, startRel, seg.speakerId)
                 segmentRowIds[seg] = id
                 store.updateSegmentText(id, seg.sourceText, seg.translationText)
                 committedTexts[id] = seg.sourceText to seg.translationText
@@ -306,6 +318,7 @@ class TranslateManager private constructor(context: Context) {
                     onSegmentCommitted?.invoke(rowId)
                 }
             }
+            segmentRowIds[seg]?.let { persistTiming(it, seg) }
         }
         val published = ArrayList<SegmentUi>(frozenSegments.size + live.size)
         published.addAll(frozenSegments)
@@ -317,6 +330,28 @@ class TranslateManager private constructor(context: Context) {
 
     // rowId -> (source, translation) 上次落库的文本
     private val committedTexts = HashMap<Long, Pair<String, String>>()
+
+    private data class Timing(val endMs: Long?, val audioStartMs: Long?, val audioEndMs: Long?)
+
+    // rowId -> 上次落库的时间轴，避免每个 delta 都写库
+    private val committedTiming = HashMap<Long, Timing>()
+
+    private fun persistTiming(rowId: Long, seg: LiveTranslateClient.Segment) {
+        val endRel = if (seg.endedMono > 0) {
+            (seg.endedMono - sessionStartMono).coerceAtLeast(0)
+        } else {
+            null
+        }
+        val timing = Timing(
+            endRel,
+            seg.audioStartMs.takeIf { it >= 0 },
+            seg.audioEndMs.takeIf { it >= 0 },
+        )
+        if (timing == committedTiming[rowId]) return
+        if (timing.endMs == null && timing.audioEndMs == null) return
+        store.updateSegmentTiming(rowId, timing.endMs, timing.audioStartMs, timing.audioEndMs)
+        committedTiming[rowId] = timing
+    }
 
     @SuppressLint("WakelockTimeout")
     private fun acquireWakeLock() {

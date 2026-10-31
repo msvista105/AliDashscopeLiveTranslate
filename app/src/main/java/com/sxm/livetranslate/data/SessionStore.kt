@@ -12,7 +12,7 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
 
     companion object {
         private const val DB_NAME = "live_translate.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
     }
 
     class SessionRow(
@@ -32,6 +32,9 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         val speakerId: String?,
         val sourceText: String,
         val translationText: String,
+        val endMs: Long?,
+        val audioStartMs: Long?,
+        val audioEndMs: Long?,
     )
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -54,6 +57,9 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
             speaker_id TEXT,
             source_text TEXT NOT NULL DEFAULT '',
             translation_text TEXT NOT NULL DEFAULT '',
+            end_ms INTEGER,
+            audio_start_ms INTEGER,
+            audio_end_ms INTEGER,
             FOREIGN KEY(session_id) REFERENCES sessions(_id) ON DELETE CASCADE
         )"""
         )
@@ -61,9 +67,12 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS segments")
-        db.execSQL("DROP TABLE IF EXISTS sessions")
-        onCreate(db)
+        // v1 -> v2：补时间轴列，保留已有会话数据
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE segments ADD COLUMN end_ms INTEGER")
+            db.execSQL("ALTER TABLE segments ADD COLUMN audio_start_ms INTEGER")
+            db.execSQL("ALTER TABLE segments ADD COLUMN audio_end_ms INTEGER")
+        }
     }
 
     fun insertSession(startTime: Long, targetLang: String, micFile: String?, translatedFile: String?): Long =
@@ -82,7 +91,7 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         writableDatabase.use { db ->
             db.execSQL(
                 "UPDATE sessions SET end_time=?, source_lang=COALESCE(?, source_lang) WHERE _id=?",
-                arrayOf(endTime, sourceLang, id)
+                arrayOf<Any?>(endTime, sourceLang, id)
             )
         }
     }
@@ -106,7 +115,20 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                 translation_text=COALESCE(?, translation_text)
                 WHERE _id=?""",
                 // 服务端 delta 拼接后常带尾随空格，不清洗会一路带进 SRT 导出
-                arrayOf(source?.trim(), translation?.trim(), id)
+                arrayOf<Any?>(source?.trim(), translation?.trim(), id)
+            )
+        }
+    }
+
+    fun updateSegmentTiming(id: Long, endMs: Long?, audioStartMs: Long?, audioEndMs: Long?) {
+        writableDatabase.use { db ->
+            db.execSQL(
+                """UPDATE segments SET
+                end_ms=COALESCE(?, end_ms),
+                audio_start_ms=COALESCE(?, audio_start_ms),
+                audio_end_ms=COALESCE(?, audio_end_ms)
+                WHERE _id=?""",
+                arrayOf<Any?>(endMs, audioStartMs, audioEndMs, id)
             )
         }
     }
@@ -154,7 +176,9 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         val out = ArrayList<SegmentRow>()
         readableDatabase.use { db ->
             db.rawQuery(
-                "SELECT * FROM segments WHERE session_id=? ORDER BY start_ms",
+                """SELECT _id, session_id, start_ms, speaker_id, source_text, translation_text,
+                end_ms, audio_start_ms, audio_end_ms
+                FROM segments WHERE session_id=? ORDER BY start_ms""",
                 arrayOf(sessionId.toString())
             ).use { c ->
                 while (c.moveToNext()) {
@@ -163,6 +187,9 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
                             c.getLong(0), c.getLong(1), c.getLong(2),
                             if (c.isNull(3)) null else c.getString(3),
                             c.getString(4), c.getString(5),
+                            if (c.isNull(6)) null else c.getLong(6),
+                            if (c.isNull(7)) null else c.getLong(7),
+                            if (c.isNull(8)) null else c.getLong(8),
                         )
                     )
                 }
@@ -185,13 +212,21 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
     /** 导出会话字幕为 SRT 格式（时间戳为会话内相对时间）。 */
     fun exportSrt(sessionId: Long): String {
         val sb = StringBuilder()
-        var index = 1
-        for (seg in listSegments(sessionId)) {
-            if (seg.translationText.isBlank()) continue
-            sb.append(index++).append('\n')
+        val segments = listSegments(sessionId).filter { it.translationText.isNotBlank() }
+        for ((i, seg) in segments.withIndex()) {
+            val naturalEnd = seg.endMs?.takeIf { it > seg.startMs }
+                ?: (seg.startMs + estimateDurationMs(seg))
+            // 说话人重叠时避免后一条压在前一条上
+            val nextStart = segments.getOrNull(i + 1)?.startMs
+            val end = if (nextStart != null && nextStart > seg.startMs) {
+                minOf(naturalEnd, nextStart - 1).coerceAtLeast(seg.startMs + 200)
+            } else {
+                naturalEnd
+            }
+            sb.append(i + 1).append('\n')
             sb.append(formatSrtTime(seg.startMs)).append(" --> ")
-            sb.append(formatSrtTime(seg.startMs + estimateDurationMs(seg))).append('\n')
-            if (!seg.sourceText.isBlank()) {
+            sb.append(formatSrtTime(end)).append('\n')
+            if (seg.sourceText.isNotBlank()) {
                 sb.append(seg.sourceText).append('\n')
             }
             sb.append(seg.translationText).append('\n').append('\n')
