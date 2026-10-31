@@ -2,6 +2,8 @@ package com.sxm.livetranslate
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 
 class AppSettings(context: Context) {
 
@@ -27,6 +29,7 @@ class AppSettings(context: Context) {
         )
 
         private const val PREFS = "live_translate_settings"
+        private const val SECURE_PREFS = "live_translate_secure"
         private const val KEY_API = "api_key"
         private const val KEY_WORKSPACE = "workspace_id"
         private const val KEY_REGION_SG = "region_singapore"
@@ -35,10 +38,64 @@ class AppSettings(context: Context) {
 
         /** 服务端建议热词不超过 1000 条 */
         private const val MAX_PHRASES = 1000
+
+        private fun securePrefs(context: Context): SharedPreferences {
+            val app = context.applicationContext
+            try {
+                return createEncrypted(app)
+            } catch (_: Exception) {
+                // 密钥库损坏（换机恢复备份等）时旧密文已无法解开，清掉重试一次
+                app.deleteSharedPreferences(SECURE_PREFS)
+            }
+            return try {
+                createEncrypted(app)
+            } catch (_: Exception) {
+                // 最后兜底：退回旧明文存储，保证 App 至少可用
+                app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            }
+        }
+
+        private fun createEncrypted(context: Context): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            val secure = EncryptedSharedPreferences.create(
+                context,
+                SECURE_PREFS,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+            migrateLegacy(context, secure)
+            return secure
+        }
+
+        /** 把旧版明文设置搬进加密文件，成功后清空明文文件（API Key 不再落盘为明文）。 */
+        private fun migrateLegacy(context: Context, secure: SharedPreferences) {
+            val legacy = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (legacy.all.isEmpty()) return
+            val editor = secure.edit()
+            for ((key, value) in legacy.all) {
+                if (secure.contains(key)) continue
+                when (value) {
+                    is String -> editor.putString(key, value)
+                    is Boolean -> editor.putBoolean(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Float -> editor.putFloat(key, value)
+                    is Set<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        editor.putStringSet(key, value as Set<String>)
+                    }
+                }
+            }
+            if (editor.commit()) {
+                legacy.edit().clear().commit()
+            }
+        }
     }
 
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = securePrefs(context)
 
     var apiKey: String
         get() = prefs.getString(KEY_API, "").orEmpty()

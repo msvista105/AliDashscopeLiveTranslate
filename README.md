@@ -48,7 +48,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 | 项 | 说明 |
 |---|---|
-| 百炼 API Key | 必填。只存本机 SharedPreferences，不上传、不入仓库 |
+| 百炼 API Key | 必填。存 EncryptedSharedPreferences（Android Keystore 加密），不上传、不入仓库 |
 | 业务空间 ID | 选填。留空则走公共域名 `dashscope.aliyuncs.com` |
 | 地域 | 北京 / 新加坡，决定 WebSocket 域名 |
 | 目标语言 | 译文语言 |
@@ -96,8 +96,8 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
 - **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
 - **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成（字段按官方文档，未经真机联网验证）；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长）；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
-- **P3 发布准备** —— Release 签名 + ProGuard、API Key 迁移 EncryptedSharedPreferences、MockWebServer 协议单测
+- **P3 发布准备** —— API Key 迁移 EncryptedSharedPreferences 已完成（旧明文设置首次启动自动迁移并清空）；待做：Release 签名 + ProGuard、MockWebServer 协议单测
 
 ## 安全
 
-API Key 由用户在本机输入，仅存 SharedPreferences，不写入仓库、不进日志。当前明文存储是已知取舍，P3 会迁到 EncryptedSharedPreferences。若把 Key 贴到过聊天或截图里，请到百炼控制台轮换。
+API Key 由用户在本机输入，存 `EncryptedSharedPreferences`（AES256_GCM，密钥在 Android Keystore），不写入仓库、不进日志。旧版明文设置会在首次启动时自动迁移并清空原文件。极端情况下 Keystore 不可用时回退到明文存储以保证 App 可用，此时 API 安全等级降级，需用户自行判断环境是否可信。若把 Key 贴到过聊天或截图里，请到百炼控制台轮换。
