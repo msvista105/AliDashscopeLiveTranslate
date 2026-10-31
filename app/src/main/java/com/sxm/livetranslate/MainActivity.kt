@@ -27,7 +27,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settings: AppSettings
     private val viewModel: SessionViewModel by viewModels()
 
-    private val rowViews = ArrayList<RowSubtitleBinding>()
+    /** 单行字幕：target 是服务端最新文本，shown 是已经打出来的部分。 */
+    private class SubtitleRow(val binding: RowSubtitleBinding) {
+        var targetSource = ""
+        var targetTranslation = ""
+        var shownSource = ""
+        var shownTranslation = ""
+        var speaker: String? = null
+    }
+
+    private val rows = ArrayList<SubtitleRow>()
+    private var pendingSegments: List<TranslateManager.SegmentUi>? = null
+    private var renderScheduled = false
+    private var revealing = false
     private var pendingStartAfterPermission = false
 
     private val permissionLauncher =
@@ -138,35 +150,122 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderSegments(segments: List<TranslateManager.SegmentUi>) {
-        if (segments.isEmpty()) return
-        binding.tvEmptyHint.visibility = View.GONE
-        val atBottom = !binding.scroll.canScrollVertically(1)
-        for (index in segments.indices) {
-            val row = if (index < rowViews.size) {
-                rowViews[index]
-            } else {
-                RowSubtitleBinding.inflate(layoutInflater, binding.subtitleList, true)
-                    .also { rowViews.add(it) }
-            }
-            val segment = segments[index]
-            row.tvSource.text = segment.sourceText
-            row.tvTranslation.text = segment.translationText
-            val speaker = segment.speakerId
-            if (speaker != null && segments.size > 1) {
-                row.tvSpeaker.text = getString(R.string.speaker_format, speaker)
-                row.tvSpeaker.visibility = View.VISIBLE
-            }
-        }
-        if (atBottom) {
-            binding.scroll.post { binding.scroll.fullScroll(View.FOCUS_DOWN) }
+        // 一帧内的多次 delta 只渲染一次：服务端高频推字时避免重复重排造成抖动
+        pendingSegments = segments
+        if (renderScheduled) return
+        renderScheduled = true
+        binding.root.postOnAnimation {
+            renderScheduled = false
+            val latest = pendingSegments ?: return@postOnAnimation
+            pendingSegments = null
+            applySegments(latest)
         }
     }
 
+    private fun applySegments(segments: List<TranslateManager.SegmentUi>) {
+        if (segments.isEmpty()) {
+            clearRows()
+            return
+        }
+        binding.tvEmptyHint.visibility = View.GONE
+        val liveIndex = segments.lastIndex
+        for (index in segments.indices) {
+            val segment = segments[index]
+            val row = if (index < rows.size) {
+                rows[index]
+            } else {
+                // 新建行（含旋转后重建）直接显示全文，不从空串重打一遍
+                RowSubtitleBinding.inflate(layoutInflater, binding.subtitleList, true).let {
+                    SubtitleRow(it).also { created ->
+                        created.shownSource = segment.sourceText
+                        created.shownTranslation = segment.translationText
+                        rows.add(created)
+                    }
+                }
+            }
+            row.targetSource = segment.sourceText
+            row.targetTranslation = segment.translationText
+            if (index < liveIndex) {
+                row.shownSource = segment.sourceText
+                row.shownTranslation = segment.translationText
+            }
+            bindText(row)
+            bindSpeaker(row, segment.speakerId, segments.size)
+        }
+        startReveal()
+    }
+
+    private fun bindText(row: SubtitleRow) {
+        if (row.binding.tvSource.text.toString() != row.shownSource) {
+            row.binding.tvSource.text = row.shownSource
+        }
+        if (row.binding.tvTranslation.text.toString() != row.shownTranslation) {
+            row.binding.tvTranslation.text = row.shownTranslation
+        }
+    }
+
+    private fun bindSpeaker(row: SubtitleRow, speaker: String?, segmentCount: Int) {
+        if (speaker == row.speaker) return
+        row.speaker = speaker
+        if (speaker != null && segmentCount > 1) {
+            row.binding.tvSpeaker.text = getString(R.string.speaker_format, speaker)
+            row.binding.tvSpeaker.visibility = View.VISIBLE
+        } else {
+            row.binding.tvSpeaker.visibility = View.GONE
+        }
+    }
+
+    private fun startReveal() {
+        if (revealing) return
+        revealing = true
+        binding.root.postOnAnimation(revealTick)
+    }
+
+    private val revealTick = object : Runnable {
+        override fun run() {
+            val live = rows.lastOrNull()
+            val behind = live != null && revealMore(live)
+            // 只在用户本来就贴着底部时跟随滚动，手动上翻时不打断
+            if (!binding.scroll.canScrollVertically(1)) {
+                binding.scroll.fullScroll(View.FOCUS_DOWN)
+            }
+            revealing = behind
+            if (behind) binding.root.postOnAnimation(this)
+        }
+    }
+
+    /** @return 是否仍有未揭示的文本 */
+    private fun revealMore(row: SubtitleRow): Boolean {
+        row.shownSource = revealMore(row.binding.tvSource, row.shownSource, row.targetSource)
+        row.shownTranslation =
+            revealMore(row.binding.tvTranslation, row.shownTranslation, row.targetTranslation)
+        return row.shownSource.length < row.targetSource.length ||
+            row.shownTranslation.length < row.targetTranslation.length
+    }
+
+    private fun revealMore(view: android.widget.TextView, shown: String, target: String): String {
+        val next = chase(shown, target)
+        if (next != shown) view.text = next
+        return next
+    }
+
+    /** 按积压量自适应追赶：攒得越多每帧吐得越快，尾部零头直接补齐。 */
+    private fun chase(shown: String, target: String): String {
+        if (shown == target) return shown
+        if (!target.startsWith(shown)) return target
+        val backlog = target.length - shown.length
+        if (backlog <= REVEAL_TAIL_SNAP) return target
+        return target.substring(0, shown.length + (backlog + 5) / 6)
+    }
+
     private fun clearRows() {
+        binding.root.removeCallbacks(revealTick)
+        revealing = false
+        pendingSegments = null
         if (binding.subtitleList.childCount > 1) {
             binding.subtitleList.removeViews(1, binding.subtitleList.childCount - 1)
         }
-        rowViews.clear()
+        rows.clear()
         binding.tvEmptyHint.visibility = View.VISIBLE
     }
 
@@ -222,6 +321,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(message: String) {
         Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT).show()
+    }
+
+    private companion object {
+        /** 剩余零头不超过这个字数就一次补齐，避免结尾拖尾 */
+        const val REVEAL_TAIL_SNAP = 2
     }
 
     override fun onDestroy() {
