@@ -192,6 +192,7 @@ class TranslateManager private constructor(context: Context) {
                 workspaceId = settings.workspaceId,
                 useSingapore = settings.useSingapore,
                 targetLanguage = settings.targetLanguage,
+                phrases = settings.phrases(),
             )
         } catch (e: Exception) {
             if (fatalOnFailure) {

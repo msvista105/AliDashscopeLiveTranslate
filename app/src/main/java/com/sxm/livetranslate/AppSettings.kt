@@ -31,6 +31,10 @@ class AppSettings(context: Context) {
         private const val KEY_WORKSPACE = "workspace_id"
         private const val KEY_REGION_SG = "region_singapore"
         private const val KEY_LANG = "target_lang"
+        private const val KEY_HOTWORDS = "hotwords"
+
+        /** 服务端建议热词不超过 1000 条 */
+        private const val MAX_PHRASES = 1000
     }
 
     private val prefs: SharedPreferences =
@@ -53,6 +57,25 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_LANG, value).apply()
 
     fun isReady(): Boolean = apiKey.isNotBlank()
+
+    var hotwords: String
+        get() = prefs.getString(KEY_HOTWORDS, "").orEmpty()
+        set(value) = prefs.edit().putString(KEY_HOTWORDS, value).apply()
+
+    /** 每行一条「原文=译文」；只写原文时视为译文与原文相同，适合专有名词。 */
+    fun phrases(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (raw in hotwords.lineSequence()) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val source = line.substringBefore('=').trim()
+            if (source.isEmpty()) continue
+            val fixed = line.substringAfter('=', source).trim().ifEmpty { source }
+            out.putIfAbsent(source, fixed)
+            if (out.size >= MAX_PHRASES) break
+        }
+        return out
+    }
 
     fun languageDisplayName(): String =
         LANGUAGES.firstOrNull { it.code == targetLanguage }?.displayName ?: targetLanguage

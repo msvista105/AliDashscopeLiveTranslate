@@ -287,6 +287,7 @@ class MainActivity : AppCompatActivity() {
         val dialog = DialogSettingsBinding.inflate(layoutInflater)
         dialog.etApiKey.setText(settings.apiKey)
         dialog.etWorkspaceId.setText(settings.workspaceId)
+        dialog.etHotwords.setText(settings.hotwords)
         dialog.toggleRegion.check(
             if (settings.useSingapore) R.id.btnRegionSingapore else R.id.btnRegionBeijing
         )
@@ -306,6 +307,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(R.string.save) { _, _ ->
                 settings.apiKey = dialog.etApiKey.text.toString().trim()
                 settings.workspaceId = dialog.etWorkspaceId.text.toString().trim()
+                settings.hotwords = dialog.etHotwords.text.toString().trim()
                 settings.useSingapore =
                     dialog.toggleRegion.checkedButtonId == R.id.btnRegionSingapore
                 settings.targetLanguage = selectedLang.code

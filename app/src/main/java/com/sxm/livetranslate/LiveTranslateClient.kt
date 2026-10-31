@@ -79,6 +79,7 @@ class LiveTranslateClient(
         workspaceId: String,
         useSingapore: Boolean,
         targetLanguage: String,
+        phrases: Map<String, String>,
     ) {
         state = State.CONNECTING
         closing = false
@@ -100,15 +101,24 @@ class LiveTranslateClient(
             ws = okHttp.newWebSocket(request, listener)
 
             awaitStep(sessionCreated, "等待 session.created 超时")
-            send(buildSessionUpdate(targetLanguage))
+            send(buildSessionUpdate(targetLanguage, phrases))
             awaitStep(sessionUpdated, "等待 session.updated 超时")
         }
         state = State.ACTIVE
     }
 
-    private fun buildSessionUpdate(targetLanguage: String): String {
-        val session = JSONObject()
-        session.put("translation", JSONObject().put("language", targetLanguage))
+    private fun buildSessionUpdate(
+        targetLanguage: String,
+        phrases: Map<String, String>,
+    ): String {
+        val translation = JSONObject().put("language", targetLanguage)
+        if (phrases.isNotEmpty()) {
+            // 热词/术语表必须在开始灌音频前随 session.update 下发，晚发不生效
+            val corpus = JSONObject()
+            phrases.forEach { (source, fixed) -> corpus.put(source, fixed) }
+            translation.put("corpus", JSONObject().put("phrases", corpus))
+        }
+        val session = JSONObject().put("translation", translation)
         session.put("output_modalities", JSONArray().put("text").put("audio"))
         // 实测：不带 voice 时服务端默认音色 Chelsie 被拒（400）；voice=default 仅在复刻模式下存在，
         // 而复刻模式实测不产出任何转写/译文/音频，故固定用已验证可用的 Tina。

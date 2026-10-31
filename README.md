@@ -10,6 +10,7 @@ Android 实时语音翻译 App。手机麦克风拾音，通过阿里云百炼�
 - **说话人分离**：按 `speaker_detection` 切分语句并标注「说话人 N」
 - **译文语音**：24kHz PCM 下行即时播放，音色固定 `Tina`
 - **15 种目标语言**：英/中/日/韩/法/德/西/俄/葡/阿/意/泰/越/印尼/印地
+- **热词 / 术语表**：每行 `原文=译文`，随 `session.update` 下发给 `translation.corpus.phrases`，专有名词可固定译法
 - **双地域**：华北2（北京）与新加坡可切换
 - **会话历史**：SQLite 存会话与语句，列表可查、可删（连带删音频）
 - **回放与导出**：详情页播放译文音频，导出 SRT 经 FileProvider 分享
@@ -50,6 +51,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | 业务空间 ID | 选填。留空则走公共域名 `dashscope.aliyuncs.com` |
 | 地域 | 北京 / 新加坡，决定 WebSocket 域名 |
 | 目标语言 | 译文语言 |
+| 热词 / 术语表 | 选填。每行一条 `原文=译文`，只写原文表示按原样输出，`#` 开头为注释，最多 1000 条；在开始翻译前下发才生效 |
 
 填好后点「开始翻译」，前台服务通知会出现，息屏后仍在跑。再点一次结束会话。
 
@@ -91,8 +93,8 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 ## 路线图
 
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
-- **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与滚动防抖待做
-- **P2 特色功能** —— 双语对话模式（切换翻译方向）、热词/术语表（`translation.corpus.phrases`）、图片辅助翻译（`input_image_buffer.append`）、字幕与音频时间轴对齐回放
+- **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
+- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成（字段按官方文档，未经真机联网验证）；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）、字幕与音频时间轴对齐回放
 - **P3 发布准备** —— Release 签名 + ProGuard、API Key 迁移 EncryptedSharedPreferences、MockWebServer 协议单测
 
 ## 安全

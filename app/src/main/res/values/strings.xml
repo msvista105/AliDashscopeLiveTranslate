@@ -19,6 +19,8 @@
     <string name="region_beijing">华北2（北京）</string>
     <string name="region_singapore">新加坡</string>
     <string name="target_lang_label">目标语言</string>
+    <string name="hotwords_label">热词 / 术语表（选填）</string>
+    <string name="hotwords_helper">每行一条，原文=译文；只写原文表示按原样输出，# 开头为注释</string>
     <string name="save">保存</string>
     <string name="cancel">取消</string>
     <string name="mic_permission_needed">需要麦克风权限才能使用实时翻译</string>
