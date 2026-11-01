@@ -15,7 +15,7 @@ Android 实时语音翻译 App。手机麦克风拾音，通过阿里云百炼�
 - **会话历史**：SQLite 存会话与语句，列表可查、可删（连带删音频）
 - **回放与导出**：详情页播放原声/译音，播放时按句高亮，点任意字幕从该句位置开始播；导出 SRT 经 FileProvider 分享
 - **双轨录音**：`<时间戳>_mic.wav`（16kHz）与 `<时间戳>_translated.wav`（24kHz）写在 `getExternalFilesDir()/recordings/`
-- **时间轴**：服务端事件不带时间戳，客户端按 `speech_started` / `speech_stopped` 到达时刻记录语句起止，译音按已写入字节数换算 24kHz 轨内偏移，因此字幕与两条 WAV 都能对齐
+- **时间轴**：`speech_started` / `speech_stopped` 事件带输入音频轨内的 `audio_start_ms` / `audio_end_ms`，直接用作原声轨起止；事件缺失时退回客户端到达时刻。译音按已写入字节数换算 24kHz 轨内偏移，因此字幕与两条 WAV 都能对齐
 - **抗抖动**：断线指数退避重连（1s/2s/4s，最多 3 次），重连复用同一会话与同一对 WAV
 - **音频焦点**：失去焦点即真停采集，恢复后自动续采；`PARTIAL_WAKE_LOCK` 保证息屏不断流
 
@@ -73,7 +73,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 - **会话资源归 `TranslateManager`**。UI 只是 `StateFlow<UiState>` 的订阅者，Activity 旋转或关闭都不会掐断翻译；`SessionViewModel.stop()` 刻意不走 `viewModelScope`。
 - **线程边界**：麦克风采集线程只调 `sendAudio`（断线后静默丢帧，不抛异常）；WebSocket 回调切主线程更新状态；磁盘写走单线程 executor。
 
-数据表：`sessions(_id, start_time, end_time, source_lang, target_lang, mic_file, translated_file)` 与 `segments(_id, session_id, start_ms, end_ms, audio_start_ms, audio_end_ms, speaker_id, source_text, translation_text)`，外键级联删除。`start_ms/end_ms` 是原声轨时间，`audio_*` 是译音轨偏移，均由客户端实测而非估算。DB v1 → v2 用 `ALTER TABLE` 原地迁移，不丢历史数据。
+数据表：`sessions(_id, start_time, end_time, source_lang, target_lang, mic_file, translated_file)` 与 `segments(_id, session_id, start_ms, end_ms, audio_start_ms, audio_end_ms, speaker_id, source_text, translation_text)`，外键级联删除。`start_ms/end_ms` 是原声轨时间，优先取服务端 `audio_start_ms` / `audio_end_ms`，事件缺失时退回客户端到达时刻；`audio_*` 是译音轨偏移，由下行 PCM 字节数换算。DB v1 → v2 用 `ALTER TABLE` 原地迁移，不丢历史数据。
 
 ## 协议要点
 
@@ -84,9 +84,15 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 1. 带音频输出时不能省 `voice` 字段 —— 服务端默认音色 `Chelsie` 会被 `<400> InternalError.Algo.InvalidParameter` 拒绝
 2. `enable_voice_clone` + `voice=default` 实测不产出任何转写、译文或音频，所以声音复刻功能已从 UI、设置项和协议层彻底移除，音色固定 `Tina`（目前唯一实测可用的）
 
+2026-11-01 用本机 TTS 生成的 5.5 秒英文语音跑了一次真实联网会话（脚本在临时目录，不进仓库），实测结论：
+
+- `translation.corpus.phrases` 被 `session.update` 接受且**生效**：喂入 "Mercury will ship the new SDK..."，热词表写 `Mercury=默丘里`，译文返回「默丘里,将在周四的合作伙伴评审会上发布新的SDK。」——默认译法是「水星」，说明术语表确实覆盖了模型选择
+- `input_audio_buffer.speech_started` / `speech_stopped` **带服务端时间戳** `audio_start_ms: 0` / `audio_end_ms: 5440`（相对输入音频流，与麦克风 WAV 位置等价）。官方文档没写这两个字段，之前按「事件不带时间戳」实现的客户端墙钟估算已降级为兜底
+- `response.audio.delta` 仍不带 `item_id`，译文音频与语句的关联继续依赖响应顺序；本次 16 个 delta 共 238080 字节 = 4960ms @24kHz，与整句朗读时长吻合，`TRANSLATED_BYTES_PER_MS = 48` 的假设成立
+
 ## 已知限制
 
-- **时间轴精度受网络影响**。语句起止只能取事件到达时刻，和真实说话时刻有百毫秒级偏差；重叠说话时译音归属按响应顺序近似。v1 老会话没有 `end_ms`，回退到按文本长度估算
+- **时间轴的两个残留误差**。重叠说话时译音归属仍按响应顺序近似；断线重连后服务端的输入轨从 0 重新计数，用重连时麦克风已写字节数做基准接续，断线期间只落盘未上报的帧会让后续语句偏移出现小幅漂移。v1 老会话没有 `end_ms`，回退到按文本长度估算
 - **音色不可选**。只有 `Tina` 经过实测，UI 不提供音色切换，避免塞进未验证的 ID
 - **断线重连与音频焦点未经现场验证**。代码已实现且构建通过，但真机测试里没有实际触发过这两条路径
 - 模拟器麦克风是虚拟静音，只能验 UI / Service / 存储 / 协议握手，语音效果必须真机
@@ -95,7 +101,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
 - **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
-- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成（字段按官方文档，未经真机联网验证）；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长）；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
+- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成并联网验证生效；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长），原声起止已改用服务端 `audio_start_ms` / `audio_end_ms`；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
 - **P3 发布准备** —— API Key 迁移 EncryptedSharedPreferences 已完成（旧明文设置首次启动自动迁移并清空）；待做：Release 签名 + ProGuard、MockWebServer 协议单测
 
 ## 安全

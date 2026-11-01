@@ -89,6 +89,9 @@ class TranslateManager private constructor(context: Context) {
     private var sessionStartMs: Long = 0L
     private var sessionStartMono: Long = 0L
     private var translatedBytesWritten: Long = 0L
+
+    @Volatile
+    private var micBytesWritten: Long = 0L
     private var reconnectAttempts = 0
 
     /** CAS 守卫：初连异常与 Socket 失败回调可能并发触发，只允许一个重连流程。 */
@@ -148,6 +151,7 @@ class TranslateManager private constructor(context: Context) {
         sessionStartMs = startTime
         sessionStartMono = SystemClock.elapsedRealtime()
         translatedBytesWritten = 0L
+        micBytesWritten = 0L
         segmentRowIds.clear()
         committedTexts.clear()
         committedTiming.clear()
@@ -168,6 +172,7 @@ class TranslateManager private constructor(context: Context) {
         player = PcmPlayer().also { it.start() }
         // 麦克风回调动态读取 client 字段，重连换客户端后无需重建采集线程
         mic = MicRecorder { chunk ->
+            micBytesWritten += chunk.size
             micWriter?.append(chunk)
             client?.sendAudio(chunk)
         }
@@ -192,6 +197,7 @@ class TranslateManager private constructor(context: Context) {
             onClosed = { },
             onTransportFailure = { msg -> scope.launch { handleTransportFailure(msg, fatalOnFailure) } },
             translatedBytesAlreadyWritten = translatedBytesWritten,
+            sourceBytesAlreadyWritten = micBytesWritten,
         )
         client = c
         try {
@@ -298,7 +304,9 @@ class TranslateManager private constructor(context: Context) {
             val rowId = segmentRowIds[seg]
             if (rowId == null) {
                 val sid = currentSessionId ?: return
-                val startRel = if (seg.startedMono > 0) {
+                val startRel = if (seg.inputStartMs >= 0) {
+                    seg.inputStartMs
+                } else if (seg.startedMono > 0) {
                     (seg.startedMono - sessionStartMono).coerceAtLeast(0)
                 } else {
                     (SystemClock.elapsedRealtime() - sessionStartMono).coerceAtLeast(0)
@@ -337,7 +345,9 @@ class TranslateManager private constructor(context: Context) {
     private val committedTiming = HashMap<Long, Timing>()
 
     private fun persistTiming(rowId: Long, seg: LiveTranslateClient.Segment) {
-        val endRel = if (seg.endedMono > 0) {
+        val endRel = if (seg.inputEndMs >= 0) {
+            seg.inputEndMs
+        } else if (seg.endedMono > 0) {
             (seg.endedMono - sessionStartMono).coerceAtLeast(0)
         } else {
             null

@@ -29,6 +29,8 @@ class LiveTranslateClient(
     private val onTransportFailure: (String) -> Unit = {},
     /** 重连时译文 WAV 已写入的字节数，用于让音频时间轴接续而不是从 0 重算。 */
     private val translatedBytesAlreadyWritten: Long = 0L,
+    /** 重连时麦克风 WAV 已写入的字节数，用于把服务端输入轨偏移换算到同一条轨上。 */
+    private val sourceBytesAlreadyWritten: Long = 0L,
 ) {
     enum class State { IDLE, CONNECTING, ACTIVE, FINISHING, CLOSED }
 
@@ -36,6 +38,10 @@ class LiveTranslateClient(
         var speakerId: String? = null
         var sourceText: String = ""
         var translationText: String = ""
+
+        /** 服务端在输入音频轨内给的起止；-1 表示事件里没带，退回墙钟估算。 */
+        var inputStartMs: Long = -1L
+        var inputEndMs: Long = -1L
 
         /** elapsedRealtime 时刻；0 表示服务端没给该事件。用于换算会话内时间轴。 */
         var startedMono: Long = 0L
@@ -53,6 +59,9 @@ class LiveTranslateClient(
 
         /** 24kHz 16bit 单声道 PCM：48 字节/毫秒。 */
         private const val TRANSLATED_BYTES_PER_MS = 48L
+
+        /** 16kHz 16bit 单声道 PCM：32 字节/毫秒。 */
+        private const val SOURCE_BYTES_PER_MS = 32L
 
         /** WorkspaceId 为空时回退到公共域名，让只有 API Key 的用户也能连。 */
         fun buildUrl(workspaceId: String, useSingapore: Boolean): String {
@@ -90,6 +99,9 @@ class LiveTranslateClient(
 
     private var translatedBytes: Long = translatedBytesAlreadyWritten
 
+    /** 服务端给的输入轨偏移从这里起算，重连后仍对齐同一条麦克风 WAV。 */
+    private var sourceOffsetMs: Long = sourceBytesAlreadyWritten / SOURCE_BYTES_PER_MS
+
     /** 当前译文响应归属的语句；response.audio.delta 不带 item_id，只能按响应顺序关联。 */
     private var currentResponse: Segment? = null
 
@@ -106,6 +118,7 @@ class LiveTranslateClient(
         segmentBySourceId.clear()
         segmentByTranslationId.clear()
         translatedBytes = translatedBytesAlreadyWritten
+        sourceOffsetMs = sourceBytesAlreadyWritten / SOURCE_BYTES_PER_MS
         currentResponse = null
         sessionCreated = CompletableDeferred()
         sessionUpdated = CompletableDeferred()
@@ -272,11 +285,15 @@ class LiveTranslateClient(
                 if (sourceId.isNotEmpty()) {
                     val now = SystemClock.elapsedRealtime()
                     val speaker = event.optString("speaker_id").takeIf { it.isNotEmpty() }
+                    val streamStart = event.optLong("audio_start_ms", -1L)
                     synchronized(lock) {
                         val segment = segmentBySourceId.getOrPut(sourceId) {
                             Segment().also { segments.add(it) }
                         }
                         if (segment.startedMono == 0L) segment.startedMono = now
+                        if (streamStart >= 0 && segment.inputStartMs < 0) {
+                            segment.inputStartMs = sourceOffsetMs + streamStart
+                        }
                         if (speaker != null) segment.speakerId = speaker
                     }
                 }
@@ -284,7 +301,12 @@ class LiveTranslateClient(
             }
 
             "input_audio_buffer.speech_stopped" -> {
-                markEnded(event.optString("item_id"))
+                val sourceId = event.optString("item_id")
+                val streamEnd = event.optLong("audio_end_ms", -1L)
+                if (streamEnd >= 0 && sourceId.isNotEmpty()) synchronized(lock) {
+                    segmentBySourceId[sourceId]?.let { it.inputEndMs = sourceOffsetMs + streamEnd }
+                }
+                markEnded(sourceId)
                 notifyChanged()
             }
 
