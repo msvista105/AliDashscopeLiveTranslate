@@ -101,7 +101,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
 - **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
-- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成并联网验证生效；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长），原声起止已改用服务端 `audio_start_ms` / `audio_end_ms`；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
+- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成并联网验证生效；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长），原声起止改用服务端 `audio_start_ms` / `audio_end_ms` 后真机验收通过；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
 - **P3 发布准备** —— API Key 迁移 EncryptedSharedPreferences 已完成（旧明文设置首次启动自动迁移并清空）；待做：Release 签名 + ProGuard、MockWebServer 协议单测
 
 ## 安全
