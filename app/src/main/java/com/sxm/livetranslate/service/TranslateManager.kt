@@ -80,6 +80,8 @@ class TranslateManager private constructor(context: Context) {
     var currentSessionId: Long? = null
         private set
 
+    // 麦克风回调线程每个 chunk 都读它，重连/换方向后必须立刻对采集线程可见
+    @Volatile
     private var client: LiveTranslateClient? = null
     private var mic: MicRecorder? = null
     private var player: PcmPlayer? = null
@@ -126,13 +128,14 @@ class TranslateManager private constructor(context: Context) {
         _state.value = UiState.Switching
         scope.launch {
             try {
-                // 先把上一句的译文冲刷完，再开新连接；麦克风线程继续采集，不丢音频
+                // 先把上一句的译文冲刷完再开新连接；冲刷窗口内麦克风继续采集，
+                // 帧仍写入原声 WAV，只是不再上报给这条即将收尾的连接
                 c.finish()
             } catch (_: Exception) {
                 c.close()
             }
-            // 冲刷期间用户可能已停止会话
-            if (currentSessionId == null) return@launch
+            // 冲刷期间用户可能已停止会话，或旧连接的迟到回调已经把会话拆掉
+            if (currentSessionId == null || _state.value !is UiState.Switching) return@launch
             // 旧连接的字幕先固化，否则新客户端空快照会让已显示的字幕消失
             freezeSegments()
             openClient(fatalOnFailure = false)
@@ -275,6 +278,7 @@ class TranslateManager private constructor(context: Context) {
         _state.value = UiState.Reconnecting(reconnectAttempts)
         delay(BASE_RECONNECT_DELAY_MS shl (reconnectAttempts - 1))
         if (!reconnecting.get()) return // 等待期间用户已手动停止
+        if (currentSessionId == null) return // 等待期间拆会话的回调已跑完，别再开一条连接
         openClient(fatalOnFailure = false)
     }
 

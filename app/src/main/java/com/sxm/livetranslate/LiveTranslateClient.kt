@@ -174,8 +174,9 @@ class LiveTranslateClient(
     }
 
     fun sendAudio(pcm16k: ByteArray) {
-        // 断线后麦克风线程仍在回调，静默丢弃而非抛异常
-        if (state == State.CLOSED) return
+        // 只有 ACTIVE 才灌音频：断线后麦克风线程仍在回调，静默丢弃而非抛异常；
+        // 双语对话换方向的冲刷窗口（FINISHING）同理，旧连接再收帧就会和重连的回调打架
+        if (state != State.ACTIVE) return
         val payload = JSONObject()
             .put("type", "input_audio_buffer.append")
             .put("audio", Base64.encodeToString(pcm16k, Base64.NO_WRAP))
