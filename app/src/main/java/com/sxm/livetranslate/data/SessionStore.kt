@@ -96,8 +96,14 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 
         }
     }
 
-    fun insertSegment(sessionId: Long, startMs: Long, speakerId: String?): Long =
+    /** 双语对话中途换方向：同一会话只保留最后一次译文语言。 */
+    fun updateSessionTargetLang(id: Long, targetLang: String) {
         writableDatabase.use { db ->
+            db.execSQL("UPDATE sessions SET target_lang=? WHERE _id=?", arrayOf<Any?>(targetLang, id))
+        }
+    }
+
+    fun insertSegment(sessionId: Long, startMs: Long, speakerId: String?): Long =        writableDatabase.use { db ->
             db.insert(
                 "segments", null, ContentValues().apply {
                     put("session_id", sessionId)

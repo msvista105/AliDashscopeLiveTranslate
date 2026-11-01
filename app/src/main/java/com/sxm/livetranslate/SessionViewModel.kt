@@ -21,6 +21,8 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         TranslateService.stop(getApplication())
     }
 
+    fun switchDirection() = manager.switchDirection()
+
     override fun onCleared() {
         // 会话由前台 Service + Manager 单例持有，ViewModel 销毁不结束会话
     }

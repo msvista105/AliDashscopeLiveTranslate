@@ -21,6 +21,13 @@
     <string name="target_lang_label">目标语言</string>
     <string name="hotwords_label">热词 / 术语表（选填）</string>
     <string name="hotwords_helper">每行一条，原文=译文；只写原文表示按原样输出，# 开头为注释</string>
+    <string name="dialog_mode_label">双语对话模式（会话中可一键互换两种语言）</string>
+    <string name="partner_lang_label">对方语言</string>
+    <string name="status_switching">正在切换翻译方向…</string>
+    <string name="lang_pair_format">%1$s → %2$s</string>
+    <string name="dialog_pair_format">%1$s → %2$s · 轻点互换</string>
+    <string name="dialog_direction_switched">已切换：%1$s → %2$s</string>
+    <string name="dialog_partner_same_hint">对方语言需与目标语言不同，已自动改用 %1$s</string>
     <string name="save">保存</string>
     <string name="cancel">取消</string>
     <string name="mic_permission_needed">需要麦克风权限才能使用实时翻译</string>

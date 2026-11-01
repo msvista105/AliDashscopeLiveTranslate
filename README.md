@@ -11,6 +11,7 @@ Android 实时语音翻译 App。手机麦克风拾音，通过阿里云百炼�
 - **译文语音**：24kHz PCM 下行即时播放，音色固定 `Tina`
 - **15 种目标语言**：英/中/日/韩/法/德/西/俄/葡/阿/意/泰/越/印尼/印地
 - **热词 / 术语表**：每行 `原文=译文`，随 `session.update` 下发给 `translation.corpus.phrases`，专有名词可固定译法
+- **双语对话模式**：设定两种语言，翻译中点一下语言对即互换方向，录音与会话记录连续不断裂
 - **双地域**：华北2（北京）与新加坡可切换
 - **会话历史**：SQLite 存会话与语句，列表可查、可删（连带删音频）
 - **回放与导出**：详情页播放原声/译音，播放时按句高亮，点任意字幕从该句位置开始播；导出 SRT 经 FileProvider 分享
@@ -53,6 +54,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | 地域 | 北京 / 新加坡，决定 WebSocket 域名 |
 | 目标语言 | 译文语言 |
 | 热词 / 术语表 | 选填。每行一条 `原文=译文`，只写原文表示按原样输出，`#` 开头为注释，最多 1000 条；在开始翻译前下发才生效 |
+| 双语对话模式 | 开关 + 「对方语言」。开启后主界面语言对可点，一键把两种语言互换，两人各听自己懂的那种 |
 
 填好后点「开始翻译」，前台服务通知会出现，息屏后仍在跑。再点一次结束会话。
 
@@ -79,10 +81,11 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 连接 `wss://{host}/api-ws/v1/realtime?model=qwen3.8-livetranslate-flash-realtime`，`Authorization: Bearer <key>`。时序是硬性的：等 `session.created` → 发 `session.update` → 等 `session.updated` → 才能开始灌音频；结束时**必须**发 `session.finish` 并等到 `session.finished` 再关连接，否则服务端会截断未完成的译文。
 
-两个实测踩到的坑，改协议层前务必读 [LiveTranslateClient.kt](app/src/main/java/com/sxm/livetranslate/LiveTranslateClient.kt) 里的注释：
+三个实测踩到的坑，改协议层前务必读 [LiveTranslateClient.kt](app/src/main/java/com/sxm/livetranslate/LiveTranslateClient.kt) 里的注释：
 
 1. 带音频输出时不能省 `voice` 字段 —— 服务端默认音色 `Chelsie` 会被 `<400> InternalError.Algo.InvalidParameter` 拒绝
 2. `enable_voice_clone` + `voice=default` 实测不产出任何转写、译文或音频，所以声音复刻功能已从 UI、设置项和协议层彻底移除，音色固定 `Tina`（目前唯一实测可用的）
+3. 开始灌音频之后**不能再发第二次 `session.update`** —— 服务端直接以 `1007 Session update error: session already started or finished or failed.` 断开连接。因此双语对话换方向不能原地改语言，只能 `session.finish` 收尾后重开一条连接（`TranslateManager.switchDirection()`）
 
 2026-11-01 用本机 TTS 生成的 5.5 秒英文语音跑了一次真实联网会话（脚本在临时目录，不进仓库），实测结论：
 
@@ -94,6 +97,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 - **时间轴的两个残留误差**。重叠说话时译音归属仍按响应顺序近似；断线重连后服务端的输入轨从 0 重新计数，用重连时麦克风已写字节数做基准接续，断线期间只落盘未上报的帧会让后续语句偏移出现小幅漂移。v1 老会话没有 `end_ms`，回退到按文本长度估算
 - **音色不可选**。只有 `Tina` 经过实测，UI 不提供音色切换，避免塞进未验证的 ID
+- **会话记录只存最后一个方向**。双语对话中换方向会改写该会话的 `target_lang`，语句表没有逐句语言字段，历史里看不出哪句译成了哪种语言
 - **断线重连与音频焦点未经现场验证**。代码已实现且构建通过，但真机测试里没有实际触发过这两条路径
 - 模拟器麦克风是虚拟静音，只能验 UI / Service / 存储 / 协议握手，语音效果必须真机
 
@@ -101,7 +105,7 @@ UI       MainActivity · history.HistoryActivity · history.SessionDetailActivit
 
 - **P0 结构化存储与历史** —— 完成，真机端到端验收通过（识别、翻译、字幕、落库、回放、导出 SRT 全链路）
 - **P1 韧性与观感** —— 断线重连、音频焦点、WakeLock 已完成；字幕打字机效果与渲染节流、贴底滚动已完成，真机视觉验证待做
-- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成并联网验证生效；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长），原声起止改用服务端 `audio_start_ms` / `audio_end_ms` 后真机验收通过；待做：双语对话模式（切换翻译方向）、图片辅助翻译（`input_image_buffer.append`）
+- **P2 特色功能** —— 热词/术语表（`translation.corpus.phrases`）已完成并联网验证生效；字幕与音频时间轴对齐回放已完成（模拟器用本地 WAV + SQLite 验证双轨高亮、按句跳转、SRT 真实时长），原声起止改用服务端 `audio_start_ms` / `audio_end_ms` 后真机验收通过；双语对话模式已完成（切方向走收尾重开，构建通过，待真机验证）；待做：图片辅助翻译（`input_image_buffer.append`）
 - **P3 发布准备** —— API Key 迁移 EncryptedSharedPreferences 已完成（旧明文设置首次启动自动迁移并清空）；待做：Release 签名 + ProGuard、MockWebServer 协议单测
 
 ## 安全

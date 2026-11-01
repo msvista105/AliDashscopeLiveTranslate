@@ -50,6 +50,7 @@ class TranslateManager private constructor(context: Context) {
         data object Connecting : UiState()
         data class Active(val sessionId: Long, val targetLangName: String) : UiState()
         data class Reconnecting(val attempt: Int) : UiState()
+        data object Switching : UiState()
         data object MicPaused : UiState()
         data object Finishing : UiState()
         data class Closed(val sessionId: Long?) : UiState()
@@ -107,7 +108,36 @@ class TranslateManager private constructor(context: Context) {
         get() = _state.value is UiState.Connecting ||
             _state.value is UiState.Active ||
             _state.value is UiState.Reconnecting ||
+            _state.value is UiState.Switching ||
             _state.value is UiState.Finishing
+
+    /**
+     * 双语对话：交换两种语言并换一条新连接，录音与会话记录保持不变。
+     * 服务端在开始灌音频后会把第二次 session.update 直接判为错误并断连
+     * （实测 1007 "session already started or finished or failed"），所以换方向只能重建连接。
+     */
+    fun switchDirection() {
+        if (!settings.dialogMode || _state.value is UiState.Switching) return
+        val sid = currentSessionId
+        settings.swapLanguages()
+        if (sid != null) store.updateSessionTargetLang(sid, settings.targetLanguage)
+        val c = client
+        if (sid == null || c == null || c.state != LiveTranslateClient.State.ACTIVE) return
+        _state.value = UiState.Switching
+        scope.launch {
+            try {
+                // 先把上一句的译文冲刷完，再开新连接；麦克风线程继续采集，不丢音频
+                c.finish()
+            } catch (_: Exception) {
+                c.close()
+            }
+            // 冲刷期间用户可能已停止会话
+            if (currentSessionId == null) return@launch
+            // 旧连接的字幕先固化，否则新客户端空快照会让已显示的字幕消失
+            freezeSegments()
+            openClient(fatalOnFailure = false)
+        }
+    }
 
     fun start() {
         if (isRunning) return

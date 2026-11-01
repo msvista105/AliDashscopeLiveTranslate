@@ -77,10 +77,24 @@ class MainActivity : AppCompatActivity() {
                     it is TranslateManager.UiState.Active ||
                         it is TranslateManager.UiState.Connecting ||
                         it is TranslateManager.UiState.Reconnecting ||
+                        it is TranslateManager.UiState.Switching ||
                         it is TranslateManager.UiState.MicPaused ||
                         it is TranslateManager.UiState.Finishing
                 }
             ) viewModel.stop() else tryStart()
+        }
+
+        binding.tvLangPair.setOnClickListener {
+            if (!settings.dialogMode) return@setOnClickListener
+            viewModel.switchDirection()
+            updateLangPair()
+            toast(
+                getString(
+                    R.string.dialog_direction_switched,
+                    settings.displayNameOf(settings.dialogPartner()),
+                    settings.languageDisplayName(),
+                )
+            )
         }
 
         clearRows()
@@ -130,6 +144,7 @@ class MainActivity : AppCompatActivity() {
             is TranslateManager.UiState.Active -> getString(R.string.status_active)
             is TranslateManager.UiState.Reconnecting ->
                 getString(R.string.status_reconnecting, state.attempt)
+            TranslateManager.UiState.Switching -> getString(R.string.status_switching)
             is TranslateManager.UiState.MicPaused -> getString(R.string.status_mic_paused)
             is TranslateManager.UiState.Finishing -> getString(R.string.status_finishing)
             is TranslateManager.UiState.Closed -> getString(R.string.status_closed)
@@ -138,12 +153,15 @@ class MainActivity : AppCompatActivity() {
         val running = state is TranslateManager.UiState.Active ||
             state is TranslateManager.UiState.Connecting ||
             state is TranslateManager.UiState.Reconnecting ||
+            state is TranslateManager.UiState.Switching ||
             state is TranslateManager.UiState.MicPaused ||
             state is TranslateManager.UiState.Finishing
         binding.btnToggle.text =
             getString(if (running) R.string.stop_translate else R.string.start_translate)
         binding.btnToggle.isEnabled = state !is TranslateManager.UiState.Connecting &&
-            state !is TranslateManager.UiState.Finishing
+            state !is TranslateManager.UiState.Finishing &&
+            state !is TranslateManager.UiState.Switching
+        updateLangPair()
         if (state is TranslateManager.UiState.Error && state.message.isNotBlank()) {
             showSessionError(state.message)
         }
@@ -270,8 +288,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateLangPair() {
-        binding.tvLangPair.text =
-            "${getString(R.string.source_lang_label)} → ${settings.languageDisplayName()}"
+        val target = settings.languageDisplayName()
+        if (settings.dialogMode) {
+            binding.tvLangPair.isClickable = true
+            binding.tvLangPair.text = getString(
+                R.string.dialog_pair_format,
+                settings.displayNameOf(settings.dialogPartner()),
+                target,
+            )
+        } else {
+            binding.tvLangPair.isClickable = false
+            binding.tvLangPair.text = getString(
+                R.string.lang_pair_format,
+                getString(R.string.source_lang_label),
+                target,
+            )
+        }
     }
 
     private fun openHistory() {
@@ -301,6 +333,19 @@ class MainActivity : AppCompatActivity() {
             selectedLang = AppSettings.LANGUAGES[position]
         }
 
+        dialog.actPartnerLanguage.setSimpleItems(names)
+        var selectedPartner = AppSettings.LANGUAGES.firstOrNull { it.code == settings.dialogPartner() }
+            ?: AppSettings.LANGUAGES.first()
+        dialog.actPartnerLanguage.setText(selectedPartner.displayName, false)
+        dialog.actPartnerLanguage.setOnItemClickListener { _, _, position, _ ->
+            selectedPartner = AppSettings.LANGUAGES[position]
+        }
+        dialog.switchDialog.isChecked = settings.dialogMode
+        dialog.tilPartnerLang.isEnabled = settings.dialogMode
+        dialog.switchDialog.setOnCheckedChangeListener { _, checked ->
+            dialog.tilPartnerLang.isEnabled = checked
+        }
+
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.settings)
             .setView(dialog.root)
@@ -311,7 +356,18 @@ class MainActivity : AppCompatActivity() {
                 settings.useSingapore =
                     dialog.toggleRegion.checkedButtonId == R.id.btnRegionSingapore
                 settings.targetLanguage = selectedLang.code
+                settings.dialogMode = dialog.switchDialog.isChecked
+                val samePartner = selectedPartner.code == selectedLang.code
+                selectedPartner = if (samePartner) {
+                    AppSettings.LANGUAGES.first { it.code != selectedLang.code }
+                } else {
+                    selectedPartner
+                }
+                settings.partnerLanguage = selectedPartner.code
                 updateLangPair()
+                if (samePartner && settings.dialogMode) {
+                    toast(getString(R.string.dialog_partner_same_hint, selectedPartner.displayName))
+                }
             }
             .setNegativeButton(R.string.cancel, null)
             .show()

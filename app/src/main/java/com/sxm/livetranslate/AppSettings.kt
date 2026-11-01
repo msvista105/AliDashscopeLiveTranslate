@@ -34,6 +34,8 @@ class AppSettings(context: Context) {
         private const val KEY_WORKSPACE = "workspace_id"
         private const val KEY_REGION_SG = "region_singapore"
         private const val KEY_LANG = "target_lang"
+        private const val KEY_PARTNER_LANG = "partner_lang"
+        private const val KEY_DIALOG = "dialog_mode"
         private const val KEY_HOTWORDS = "hotwords"
 
         /** 服务端建议热词不超过 1000 条 */
@@ -115,6 +117,28 @@ class AppSettings(context: Context) {
 
     fun isReady(): Boolean = apiKey.isNotBlank()
 
+    /** 双语对话：会话中可一键把译文语言换成对方语言，两人各听自己懂的那种。 */
+    var dialogMode: Boolean
+        get() = prefs.getBoolean(KEY_DIALOG, false)
+        set(value) = prefs.edit().putBoolean(KEY_DIALOG, value).apply()
+
+    /** 对话模式的另一头语言，即「对方」的译文语言。 */
+    var partnerLanguage: String
+        get() = prefs.getString(KEY_PARTNER_LANG, "zh").orEmpty()
+        set(value) = prefs.edit().putString(KEY_PARTNER_LANG, value).apply()
+
+    /** 与目标语言不同的对话对象语言；设置里选了同一个语言时兜底换一个。 */
+    fun dialogPartner(): String {
+        if (partnerLanguage.isNotBlank() && partnerLanguage != targetLanguage) return partnerLanguage
+        return LANGUAGES.first { it.code != targetLanguage }.code
+    }
+
+    fun swapLanguages() {
+        val current = targetLanguage
+        targetLanguage = dialogPartner()
+        partnerLanguage = current
+    }
+
     var hotwords: String
         get() = prefs.getString(KEY_HOTWORDS, "").orEmpty()
         set(value) = prefs.edit().putString(KEY_HOTWORDS, value).apply()
@@ -134,6 +158,8 @@ class AppSettings(context: Context) {
         return out
     }
 
-    fun languageDisplayName(): String =
-        LANGUAGES.firstOrNull { it.code == targetLanguage }?.displayName ?: targetLanguage
+    fun languageDisplayName(): String = displayNameOf(targetLanguage)
+
+    fun displayNameOf(code: String): String =
+        LANGUAGES.firstOrNull { it.code == code }?.displayName ?: code
 }
